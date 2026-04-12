@@ -5025,7 +5025,7 @@ MonoBehaviour:
   rateOfFire: 2
   bulletSpeed: 18
   shootRange: 14
-  fireOffset: {x: 0.45, y: 0}
+  fireOffset: {x: 0.45, y: 1.05}
   moveSpeed: 3.5
   chaseRange: 14
   preferredDistanceFactor: 0.8
@@ -5038,12 +5038,12 @@ MonoBehaviour:
   obstacleMask:
     serializedVersion: 2
     m_Bits: 512
-  raycastOriginOffset: {x: 0, y: 0}
+  raycastOriginOffset: {x: 0, y: 0.95}
   animator: {fileID: 9018668786140292216}
   groundLayers:
     serializedVersion: 2
     m_Bits: 512
-  groundCheckOffset: {x: 0, y: 0}
+  groundCheckOffset: {x: -0.15, y: -0.52}
   groundCheckSize: {x: 0.28, y: 0.08}
   moveAnimThreshold: 0.05
 --- !u!1001 &2921715084886700611

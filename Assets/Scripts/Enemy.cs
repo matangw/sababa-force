@@ -1,3 +1,4 @@
+using System;
 using System.Collections;
 using UnityEngine;
 
@@ -36,6 +37,14 @@ public class Enemy : MonoBehaviour
     [SerializeField] bool requireClearRaycast = true;
     [SerializeField] LayerMask obstacleMask;
     [SerializeField] Vector2 raycastOriginOffset = new Vector2(0f, 0f);
+    [Tooltip("Ray starts slightly along aim so casts do not immediately hit geometry overlapping the enemy.")]
+    [SerializeField] float losRayStartInset = 0.12f;
+    [Tooltip("Treat obstacles farther than (range minus this) as not blocking (clears LOS near the target).")]
+    [SerializeField] float losTargetClearance = 0.35f;
+    [Tooltip("Raise LOS probe on Y so casts from the feet/root do not immediately hit the floor collider.")]
+    [SerializeField] float losProbeHeightOffset = 0.45f;
+    [Tooltip("Ignore obstacle hits closer than this along the ray (overlap / embedded start in ground).")]
+    [SerializeField] float losIgnoreHitsCloserThan = 0.28f;
 
     [Header("Animation")]
     [SerializeField] Animator animator;
@@ -202,13 +211,21 @@ public class Enemy : MonoBehaviour
                             moveDir = new Vector2(Mathf.Sign(toPlayer.x), 0f);
 
                         float preferredDistance = shootRange * preferredDistanceFactor;
+                        if (lockMovementToHorizontal)
+                        {
+                            // Hold zone is based on horizontal spacing; full 2D distance made
+                            // preferredDistance ~0.8*shootRange so enemies almost never moved in 2D levels.
+                            preferredDistance = Mathf.Min(preferredDistance, shootRange * 0.48f);
+                        }
+
+                        float spacingForMove = lockMovementToHorizontal ? Mathf.Abs(toPlayer.x) : dist;
                         float h = distanceHysteresis;
 
                         Vector2 v = _rb.linearVelocity;
                         if (moveDir.sqrMagnitude > 0.01f)
                         {
                             float dirX = moveDir.normalized.x;
-                            if (dist > preferredDistance + h)
+                            if (spacingForMove > preferredDistance + h)
                                 v.x = dirX * moveSpeed;
                             else
                                 v.x = 0f;
@@ -223,14 +240,50 @@ public class Enemy : MonoBehaviour
                         v.x = 0f;
                         _rb.linearVelocity = v;
                     }
-
-                    if (dist <= shootRange && HasLineOfSight(dist, toPlayer))
-                        TryFire(toPlayer.normalized);
                 }
             }
         }
 
         UpdateEnemyAnimator();
+    }
+
+    void Update()
+    {
+        if (_dead || bulletPrefab == null)
+            return;
+
+        if (_playerTransform == null)
+        {
+            var p = GameObject.FindGameObjectWithTag("Player");
+            if (p != null)
+                _playerTransform = p.transform;
+            else
+                return;
+        }
+
+        Vector2 toPlayer = (Vector2)(_playerTransform.position - transform.position);
+        float dist = toPlayer.magnitude;
+        if (dist < 0.001f)
+            return;
+
+        if (dist <= shootRange && HasLineOfSight(dist, toPlayer))
+            TryFire(AimWorldDirection(toPlayer));
+    }
+
+    /// <summary>
+    /// World-space fire direction. Sidescroller enemies use pure horizontal aim so bullets
+    /// do not arc toward a higher/lower player.
+    /// </summary>
+    Vector2 AimWorldDirection(Vector2 toPlayer)
+    {
+        if (lockMovementToHorizontal)
+        {
+            if (Mathf.Abs(toPlayer.x) > 0.001f)
+                return new Vector2(Mathf.Sign(toPlayer.x), 0f);
+            return new Vector2(Mathf.Sign(transform.localScale.x), 0f);
+        }
+
+        return toPlayer.normalized;
     }
 
     void UpdateEnemyAnimator()
@@ -256,7 +309,8 @@ public class Enemy : MonoBehaviour
 
     bool HasLineOfSight(float dist, Vector2 toPlayer)
     {
-        if (dist > sightDistance)
+        float maxSightRange = Mathf.Max(sightDistance, shootRange);
+        if (dist > maxSightRange)
             return false;
 
         float dy = Mathf.Abs(toPlayer.y);
@@ -267,19 +321,81 @@ public class Enemy : MonoBehaviour
         if (Mathf.Abs(forward.x) < 0.01f)
             forward = Vector2.right;
 
-        float angle = Vector2.Angle(forward, toPlayer);
+        Vector2 aimDirForCone = lockMovementToHorizontal
+            ? (Mathf.Abs(toPlayer.x) > 0.001f ? new Vector2(Mathf.Sign(toPlayer.x), 0f) : forward)
+            : toPlayer.normalized;
+        float angle = Vector2.Angle(forward, aimDirForCone);
         if (angle > sightHalfAngleDegrees)
             return false;
 
         if (requireClearRaycast && obstacleMask.value != 0)
         {
-            Vector2 origin = (Vector2)transform.position + raycastOriginOffset;
-            RaycastHit2D hit = Physics2D.Raycast(origin, toPlayer.normalized, dist, obstacleMask);
-            if (hit.collider != null)
+            if (!LosClearAlongAim(toPlayer, dist))
                 return false;
         }
 
         return true;
+    }
+
+    bool ColliderBelongsToThisEnemy(Collider2D c)
+    {
+        return c != null && c.GetComponentInParent<Enemy>() == this;
+    }
+
+    /// <summary>
+    /// True if no obstacle-mask collider blocks before the target. Skips hits on this enemy.
+    /// When <see cref="lockMovementToHorizontal"/> is on, uses a horizontal probe so diagonal
+    /// rays do not scrape floor/world geometry and kill sustained fire while walking.
+    /// </summary>
+    bool LosClearAlongAim(Vector2 toPlayer, float distToTarget)
+    {
+        Vector2 rawOrigin = (Vector2)transform.position + raycastOriginOffset + new Vector2(0f, losProbeHeightOffset);
+        float slack = Mathf.Max(0.01f, losTargetClearance);
+        float inset = Mathf.Max(0f, losRayStartInset);
+
+        if (lockMovementToHorizontal)
+        {
+            float hx = Mathf.Abs(toPlayer.x);
+            if (hx < 0.001f)
+                return true;
+            Vector2 dir = new Vector2(Mathf.Sign(toPlayer.x), 0f);
+            float len = Mathf.Max(0f, hx - inset);
+            if (len < 0.001f)
+                return true;
+            Vector2 origin = rawOrigin + dir * inset;
+            return !LosRayBlocked(origin, dir, len, slack);
+        }
+
+        Vector2 aim = toPlayer.normalized;
+        float castLen = Mathf.Max(0f, distToTarget - inset);
+        if (castLen < 0.001f)
+            return true;
+        Vector2 o = rawOrigin + aim * inset;
+        return !LosRayBlocked(o, aim, castLen, slack);
+    }
+
+    bool LosRayBlocked(Vector2 origin, Vector2 direction, float castLength, float endSlack)
+    {
+        RaycastHit2D[] hits = Physics2D.RaycastAll(origin, direction, castLength + 0.02f, obstacleMask);
+        if (hits == null || hits.Length == 0)
+            return false;
+
+        Array.Sort(hits, (a, b) => a.distance.CompareTo(b.distance));
+
+        float limit = Mathf.Max(0f, castLength - endSlack);
+        float ignoreNear = Mathf.Max(0f, losIgnoreHitsCloserThan);
+        for (int i = 0; i < hits.Length; i++)
+        {
+            Collider2D c = hits[i].collider;
+            if (c == null || ColliderBelongsToThisEnemy(c))
+                continue;
+            if (hits[i].distance < ignoreNear)
+                continue;
+            if (hits[i].distance < limit)
+                return true;
+        }
+
+        return false;
     }
 
     void TryFire(Vector2 aimWorld)
@@ -297,8 +413,14 @@ public class Enemy : MonoBehaviour
         Vector2 dir = aimWorld.sqrMagnitude > 0.0001f ? aimWorld.normalized : Vector2.right * facing;
 
         var bullet = Instantiate(bulletPrefab, spawnPos, Quaternion.identity);
-        if (bullet.TryGetComponent<Collider2D>(out var bulletCol) && _col != null)
-            Physics2D.IgnoreCollision(bulletCol, _col, true);
+        if (bullet.TryGetComponent<Collider2D>(out var bulletCol))
+        {
+            foreach (var c in GetComponentsInChildren<Collider2D>(true))
+            {
+                if (c != null && c.enabled)
+                    Physics2D.IgnoreCollision(bulletCol, c, true);
+            }
+        }
 
         if (bullet.TryGetComponent<Bullet>(out var b))
             b.Launch(dir, bulletSpeed, damage, shootRange, BulletAlliance.Enemy);
