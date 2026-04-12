@@ -458,8 +458,9 @@ public class Enemy : MonoBehaviour
                 Debug.Log($"{nameof(Enemy)} death VFX scheduled at {transform.position}", this);
 
             Transform psTr = deathParticles.transform;
-            psTr.SetParent(null);
-            psTr.position = transform.position;
+            Vector3 burstWorldPos = psTr.position;
+            psTr.SetParent(null, true);
+            psTr.position = burstWorldPos;
             ApplyDeathParticleMaterial(deathParticles);
             MatchDeathParticleSorting(deathParticles);
             // Same-frame Stop/Clear + Play often drops bursts; play next frame on this GO (survives enemy destroy).
