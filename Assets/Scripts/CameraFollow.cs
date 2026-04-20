@@ -10,6 +10,9 @@ public class CameraFollow : MonoBehaviour
     void LateUpdate()
     {
         if (target == null)
+            target = ResolveTarget();
+
+        if (target == null)
             return;
 
         Vector3 desired = new Vector3(target.position.x, target.position.y, transform.position.z);
@@ -17,5 +20,18 @@ public class CameraFollow : MonoBehaviour
             transform.position = desired;
         else
             transform.position = Vector3.SmoothDamp(transform.position, desired, ref _velocity, smoothTime);
+    }
+
+    Transform ResolveTarget()
+    {
+        var taggedPlayer = GameObject.FindGameObjectWithTag("Player");
+        if (taggedPlayer != null)
+            return taggedPlayer.transform;
+
+        var playerController = FindAnyObjectByType<PlayerController>();
+        if (playerController != null)
+            return playerController.transform;
+
+        return null;
     }
 }
